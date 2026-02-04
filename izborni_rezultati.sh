@@ -27,6 +27,7 @@ BOLD='\033[1m'
 BASE_URL="https://www.rik.parlament.gov.rs"
 OUTPUT_DIR="./output"
 TMP_DIR="./output/tmp"
+PDF_DIR="./output/pdf"
 
 # Common curl headers
 USER_AGENT='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
@@ -134,7 +135,64 @@ check_dependencies() {
 setup_directories() {
     mkdir -p "$OUTPUT_DIR"
     mkdir -p "$TMP_DIR"
+    mkdir -p "$PDF_DIR"
     success "Kreiran izlazni direktorijum: $OUTPUT_DIR"
+}
+
+# Extract and download PDF files from results JSON
+# Usage: download_pdfs_from_results response_file station_id station_name
+download_pdfs_from_results() {
+    local response_file=$1
+    local station_id=$2
+    local station_name=$3
+
+    # Extract minute_from_election_station field
+    local minute_html
+    minute_html=$(jq -r '.minute_from_election_station // ""' "$response_file" 2>/dev/null)
+
+    if [[ -z "$minute_html" || "$minute_html" == "null" ]]; then
+        return 0
+    fi
+
+    # Extract all PDF URLs from the HTML
+    local pdf_urls
+    pdf_urls=$(echo "$minute_html" | grep -oE "href='[^']*\.pdf'" | sed "s/href='//;s/'$//" || true)
+
+    if [[ -z "$pdf_urls" ]]; then
+        return 0
+    fi
+
+    local pdf_count=0
+    local safe_station_name
+    safe_station_name=$(echo "$station_name" | sed 's/[^a-zA-Z0-9а-яА-ЯčćžšđČĆŽŠĐ]/_/g')
+
+    while IFS= read -r pdf_path; do
+        if [[ -z "$pdf_path" ]]; then
+            continue
+        fi
+
+        # Get filename from path
+        local pdf_filename
+        pdf_filename=$(basename "$pdf_path")
+
+        # Create unique filename with station ID
+        local output_pdf="${PDF_DIR}/${station_id}_${pdf_filename}"
+
+        # Download the PDF
+        local full_url="${BASE_URL}${pdf_path}"
+
+        curl -s \
+            -H "Referer: ${BASE_URL}/" \
+            -H "User-Agent: ${USER_AGENT}" \
+            -o "$output_pdf" \
+            "$full_url"
+
+        if [[ -f "$output_pdf" && -s "$output_pdf" ]]; then
+            ((pdf_count++))
+        fi
+    done <<< "$pdf_urls"
+
+    echo "$pdf_count"
 }
 
 # Make API request with common headers
@@ -659,7 +717,15 @@ get_results() {
             echo "\"$station_id\",\"$station_name\",$line" >> "$combined_csv"
         done
 
-        echo -e " ${GREEN}OK${NC} ($RESULT_PARTY_COUNT stranaka/lista)"
+        # Download PDFs from this station
+        local pdf_downloaded
+        pdf_downloaded=$(download_pdfs_from_results "$response_file" "$station_id" "$station_name")
+
+        if [[ "$pdf_downloaded" -gt 0 ]]; then
+            echo -e " ${GREEN}OK${NC} ($RESULT_PARTY_COUNT stranaka/lista, $pdf_downloaded PDF)"
+        else
+            echo -e " ${GREEN}OK${NC} ($RESULT_PARTY_COUNT stranaka/lista)"
+        fi
 
         # Small delay to avoid overwhelming the server
         sleep 0.3
@@ -668,10 +734,15 @@ get_results() {
     echo ""
     local total_records
     total_records=$(($(wc -l < "$combined_csv") - 1))
+    local total_pdfs
+    total_pdfs=$(find "${PDF_DIR}" -name "*.pdf" 2>/dev/null | wc -l | tr -d ' ')
     success "Završeno! Ukupno zapisa: $total_records"
     success "Kombinovani fajl rezultata: $combined_csv"
     success "Metadata fajl: $metadata_csv"
     success "Pojedinačni fajlovi: ${OUTPUT_DIR}/rezultati_${ELECTION_TYPE}_${ELECTION_ROUND}_*.csv"
+    if [[ "$total_pdfs" -gt 0 ]]; then
+        success "PDF zapisnici ($total_pdfs fajlova): ${PDF_DIR}/"
+    fi
 }
 
 # Option: Download all results for all stations in municipality
@@ -761,6 +832,17 @@ get_single_station_results() {
 
     success "Učitano $RESULT_PARTY_COUNT stranaka/lista"
     success "Rezultati sačuvani u: $station_csv"
+
+    # Download PDFs from this station
+    info "Preuzimam PDF zapisnike..."
+    local pdf_downloaded
+    pdf_downloaded=$(download_pdfs_from_results "$response_file" "$SELECTED_STATION_ID" "$SELECTED_STATION_NAME")
+
+    if [[ "$pdf_downloaded" -gt 0 ]]; then
+        success "Preuzeto $pdf_downloaded PDF fajlova u: ${PDF_DIR}/"
+    else
+        warn "Nema dostupnih PDF zapisnika za ovo biračko mesto"
+    fi
 }
 
 # Cleanup function
