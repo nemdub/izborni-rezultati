@@ -23,38 +23,43 @@ $PDF_DIR = ".\output\pdf"
 # Common headers for web requests
 $USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
 
-# Cyrillic to Latin mapping (using Unicode escape sequences for compatibility)
-$CyrillicToLatin = @{
-    "`u{0410}"='A'; "`u{0430}"='a'   # А, а
-    "`u{0411}"='B'; "`u{0431}"='b'   # Б, б
-    "`u{0412}"='V'; "`u{0432}"='v'   # В, в
-    "`u{0413}"='G'; "`u{0433}"='g'   # Г, г
-    "`u{0414}"='D'; "`u{0434}"='d'   # Д, д
-    "`u{0402}"='Dj'; "`u{0452}"='dj' # Ђ, ђ
-    "`u{0415}"='E'; "`u{0435}"='e'   # Е, е
-    "`u{0416}"='Z'; "`u{0436}"='z'   # Ж, ж
-    "`u{0417}"='Z'; "`u{0437}"='z'   # З, з
-    "`u{0418}"='I'; "`u{0438}"='i'   # И, и
-    "`u{0408}"='J'; "`u{0458}"='j'   # Ј, ј
-    "`u{041A}"='K'; "`u{043A}"='k'   # К, к
-    "`u{041B}"='L'; "`u{043B}"='l'   # Л, л
-    "`u{0409}"='Lj'; "`u{0459}"='lj' # Љ, љ
-    "`u{041C}"='M'; "`u{043C}"='m'   # М, м
-    "`u{041D}"='N'; "`u{043D}"='n'   # Н, н
-    "`u{040A}"='Nj'; "`u{045A}"='nj' # Њ, њ
-    "`u{041E}"='O'; "`u{043E}"='o'   # О, о
-    "`u{041F}"='P'; "`u{043F}"='p'   # П, п
-    "`u{0420}"='R'; "`u{0440}"='r'   # Р, р
-    "`u{0421}"='S'; "`u{0441}"='s'   # С, с
-    "`u{0422}"='T'; "`u{0442}"='t'   # Т, т
-    "`u{040B}"='C'; "`u{045B}"='c'   # Ћ, ћ
-    "`u{0423}"='U'; "`u{0443}"='u'   # У, у
-    "`u{0424}"='F'; "`u{0444}"='f'   # Ф, ф
-    "`u{0425}"='H'; "`u{0445}"='h'   # Х, х
-    "`u{0426}"='C'; "`u{0446}"='c'   # Ц, ц
-    "`u{0427}"='C'; "`u{0447}"='c'   # Ч, ч
-    "`u{040F}"='Dz'; "`u{045F}"='dz' # Џ, џ
-    "`u{0428}"='S'; "`u{0448}"='s'   # Ш, ш
+# Cyrillic to Latin mapping (built dynamically for PowerShell 5.1 compatibility)
+$CyrillicToLatin = @{}
+# Upper and lowercase pairs: Cyrillic hex code, Latin equivalent
+$mappings = @(
+    @(0x0410, 'A'),  @(0x0430, 'a')   # А, а
+    @(0x0411, 'B'),  @(0x0431, 'b')   # Б, б
+    @(0x0412, 'V'),  @(0x0432, 'v')   # В, в
+    @(0x0413, 'G'),  @(0x0433, 'g')   # Г, г
+    @(0x0414, 'D'),  @(0x0434, 'd')   # Д, д
+    @(0x0402, 'Dj'), @(0x0452, 'dj')  # Ђ, ђ
+    @(0x0415, 'E'),  @(0x0435, 'e')   # Е, е
+    @(0x0416, 'Z'),  @(0x0436, 'z')   # Ж, ж
+    @(0x0417, 'Z'),  @(0x0437, 'z')   # З, з
+    @(0x0418, 'I'),  @(0x0438, 'i')   # И, и
+    @(0x0408, 'J'),  @(0x0458, 'j')   # Ј, ј
+    @(0x041A, 'K'),  @(0x043A, 'k')   # К, к
+    @(0x041B, 'L'),  @(0x043B, 'l')   # Л, л
+    @(0x0409, 'Lj'), @(0x0459, 'lj')  # Љ, љ
+    @(0x041C, 'M'),  @(0x043C, 'm')   # М, м
+    @(0x041D, 'N'),  @(0x043D, 'n')   # Н, н
+    @(0x040A, 'Nj'), @(0x045A, 'nj')  # Њ, њ
+    @(0x041E, 'O'),  @(0x043E, 'o')   # О, о
+    @(0x041F, 'P'),  @(0x043F, 'p')   # П, п
+    @(0x0420, 'R'),  @(0x0440, 'r')   # Р, р
+    @(0x0421, 'S'),  @(0x0441, 's')   # С, с
+    @(0x0422, 'T'),  @(0x0442, 't')   # Т, т
+    @(0x040B, 'C'),  @(0x045B, 'c')   # Ћ, ћ
+    @(0x0423, 'U'),  @(0x0443, 'u')   # У, у
+    @(0x0424, 'F'),  @(0x0444, 'f')   # Ф, ф
+    @(0x0425, 'H'),  @(0x0445, 'h')   # Х, х
+    @(0x0426, 'C'),  @(0x0446, 'c')   # Ц, ц
+    @(0x0427, 'C'),  @(0x0447, 'c')   # Ч, ч
+    @(0x040F, 'Dz'), @(0x045F, 'dz')  # Џ, џ
+    @(0x0428, 'S'),  @(0x0448, 's')   # Ш, ш
+)
+foreach ($m in $mappings) {
+    $CyrillicToLatin[[char]$m[0]] = $m[1]
 }
 
 # Convert Cyrillic to Latin
@@ -313,10 +318,14 @@ function Get-PartyResults {
     }
     elseif ($Json.results) {
         foreach ($item in $Json.results) {
+            # PowerShell 5.1 compatible null coalescing
+            $name = if ($item.party_name) { $item.party_name } elseif ($item.name) { $item.name } else { $item.naziv }
+            $votes = if ($null -ne $item.votes) { $item.votes } elseif ($null -ne $item.glasovi) { $item.glasovi } else { 0 }
+            $pct = if ($item.percentage) { $item.percentage } elseif ($item.procenat) { $item.procenat } else { "0" }
             $results += [PSCustomObject]@{
-                Name = Convert-CyrillicToLatin ($item.party_name ?? $item.name ?? $item.naziv)
-                Votes = $item.votes ?? $item.glasovi ?? 0
-                Percent = $item.percentage ?? $item.procenat ?? "0"
+                Name = Convert-CyrillicToLatin $name
+                Votes = $votes
+                Percent = $pct
             }
         }
     }
