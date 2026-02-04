@@ -68,7 +68,8 @@ function Convert-CyrillicToLatin {
 
     $result = $Text
     foreach ($key in $CyrillicToLatin.Keys) {
-        $result = $result.Replace($key, $CyrillicToLatin[$key])
+        # Convert char key to string for .Replace(string, string) method
+        $result = $result.Replace([string]$key, $CyrillicToLatin[$key])
     }
     return $result
 }
