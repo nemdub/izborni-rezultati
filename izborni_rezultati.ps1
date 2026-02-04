@@ -151,6 +151,7 @@ function Select-FromMenu {
     $total = $Ids.Count
     $viewportSize = [Math]::Min(15, $total)
     $viewportStart = 0
+    $lineWidth = 78
 
     Write-Info "Koristite strelice GORE/DOLE za navigaciju, ENTER za potvrdu izbora"
     Write-Host ""
@@ -158,14 +159,18 @@ function Select-FromMenu {
     # Hide cursor
     [Console]::CursorVisible = $false
 
+    # Calculate total lines needed: 1 (top indicator) + viewportSize + 1 (bottom indicator)
+    $totalLines = $viewportSize + 2
     $startY = [Console]::CursorTop
 
-    function Draw-Menu {
-        param([bool]$Redraw = $false)
+    # Write placeholder lines first to reserve space
+    for ($i = 0; $i -lt $totalLines; $i++) {
+        Write-Host ""
+    }
 
-        if ($Redraw) {
-            [Console]::SetCursorPosition(0, $startY)
-        }
+    function Draw-Menu {
+        # Move cursor to start position
+        [Console]::SetCursorPosition(0, $startY)
 
         # Adjust viewport
         if ($selected -lt $viewportStart) {
@@ -176,40 +181,32 @@ function Select-FromMenu {
         }
 
         # Top scroll indicator
-        if ($viewportStart -gt 0) {
-            Write-Host ("  ^ jos {0} iznad" -f $viewportStart) -ForegroundColor Cyan
-        }
-        else {
-            Write-Host (" " * 40)
-        }
+        $topLine = if ($viewportStart -gt 0) { "  ^ jos $viewportStart iznad" } else { "" }
+        Write-Host ($topLine.PadRight($lineWidth)) -ForegroundColor Cyan
 
         # Draw items
         for ($i = $viewportStart; $i -lt [Math]::Min($viewportStart + $viewportSize, $total); $i++) {
             $line = "  [{0}] {1}" -f $Ids[$i], $Names[$i]
             if ($line.Length -gt 70) { $line = $line.Substring(0, 67) + "..." }
-            $line = $line.PadRight(75)
 
             if ($i -eq $selected) {
-                Write-Host "> $line" -ForegroundColor Green
+                Write-Host ("> $line".PadRight($lineWidth)) -ForegroundColor Green
             }
             else {
-                Write-Host "  $line"
+                Write-Host ("  $line".PadRight($lineWidth))
             }
         }
 
-        # Pad remaining lines
-        for ($i = [Math]::Min($viewportStart + $viewportSize, $total) - $viewportStart; $i -lt $viewportSize; $i++) {
-            Write-Host (" " * 78)
+        # Pad remaining lines if viewport not full
+        $drawnItems = [Math]::Min($viewportStart + $viewportSize, $total) - $viewportStart
+        for ($i = $drawnItems; $i -lt $viewportSize; $i++) {
+            Write-Host (" " * $lineWidth)
         }
 
         # Bottom scroll indicator
         $remaining = $total - $viewportStart - $viewportSize
-        if ($remaining -gt 0) {
-            Write-Host ("  v jos {0} ispod" -f $remaining) -ForegroundColor Cyan
-        }
-        else {
-            Write-Host (" " * 40)
-        }
+        $bottomLine = if ($remaining -gt 0) { "  v jos $remaining ispod" } else { "" }
+        Write-Host ($bottomLine.PadRight($lineWidth)) -ForegroundColor Cyan -NoNewline
     }
 
     Draw-Menu
@@ -220,14 +217,15 @@ function Select-FromMenu {
         switch ($key.VirtualKeyCode) {
             38 { # Up arrow
                 if ($selected -gt 0) { $selected-- }
-                Draw-Menu -Redraw $true
+                Draw-Menu
             }
             40 { # Down arrow
                 if ($selected -lt $total - 1) { $selected++ }
-                Draw-Menu -Redraw $true
+                Draw-Menu
             }
             13 { # Enter
                 [Console]::CursorVisible = $true
+                Write-Host ""  # Move to next line after menu
                 return $selected
             }
         }
