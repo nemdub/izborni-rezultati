@@ -107,7 +107,7 @@ function Show-Usage {
     Write-Host "  -ElectionType TIP     Tip izbora (2=Parlamentarni, 3=Lokalni, 7=Pokrajinski)"
     Write-Host "  -ElectionRound KRUG   ID izbornog kruga (npr. 341140)"
     Write-Host "  -Batch                Preuzmi sve regione, opstine i biracka mesta automatski"
-    Write-Host "  -NoPdfs               Preskoči preuzimanje PDF zapisnika"
+    Write-Host "  -NoPdfs               Preskoci preuzimanje PDF zapisnika"
     Write-Host "  -Help                 Prikazi ovu poruku"
     Write-Host ""
     Write-Host "Primeri:" -ForegroundColor White
