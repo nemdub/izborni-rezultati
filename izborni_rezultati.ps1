@@ -10,6 +10,14 @@
 # i snima ih u CSV fajlove.
 # ============================================================================
 
+param(
+    [string]$ElectionType  = "",
+    [string]$ElectionRound = "",
+    [switch]$Batch,
+    [switch]$NoPdfs,
+    [switch]$Help
+)
+
 # Ensure UTF-8 encoding
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -86,6 +94,26 @@ function Show-Banner {
     Write-Host "==================================================================" -ForegroundColor Cyan
     Write-Host "                   Izborni Rezultati - RIK                        " -ForegroundColor Cyan
     Write-Host "==================================================================" -ForegroundColor Cyan
+    Write-Host ""
+}
+
+# Print usage help
+function Show-Usage {
+    Write-Host ""
+    Write-Host "Upotreba:" -ForegroundColor White
+    Write-Host "  .\izborni_rezultati.ps1 [opcije]"
+    Write-Host ""
+    Write-Host "Opcije:" -ForegroundColor White
+    Write-Host "  -ElectionType TIP     Tip izbora (2=Parlamentarni, 3=Lokalni, 7=Pokrajinski)"
+    Write-Host "  -ElectionRound KRUG   ID izbornog kruga (npr. 341140)"
+    Write-Host "  -Batch                Preuzmi sve regione, opstine i biracka mesta automatski"
+    Write-Host "  -NoPdfs               Preskoči preuzimanje PDF zapisnika"
+    Write-Host "  -Help                 Prikazi ovu poruku"
+    Write-Host ""
+    Write-Host "Primeri:" -ForegroundColor White
+    Write-Host "  .\izborni_rezultati.ps1"
+    Write-Host "  .\izborni_rezultati.ps1 -ElectionType 2 -ElectionRound 341140 -Batch"
+    Write-Host "  .\izborni_rezultati.ps1 -ElectionType 2 -ElectionRound 341140 -Batch -NoPdfs"
     Write-Host ""
 }
 
@@ -298,6 +326,8 @@ function Get-PdfsFromResults {
 
     $pdfCount = 0
 
+    if ($NoPdfs) { return 0 }
+
     try {
         $json = Get-Content $ResponseFile -Raw -Encoding UTF8 | ConvertFrom-Json
         $minuteHtml = $json.minute_from_election_station
@@ -390,12 +420,25 @@ function Get-PartyResults {
 
 # Step 1: Choose election type
 function Select-ElectionType {
+    $typeIds   = @('2', '3', '7')
+    $typeNames = @("Parlamentarni", "Lokalni", "Pokrajinski")
+
+    if ($ElectionType -ne "") {
+        $script:ELECTION_TYPE = $ElectionType
+        $script:ELECTION_TYPE_NAME = "Tip $ElectionType"
+        for ($i = 0; $i -lt $typeIds.Count; $i++) {
+            if ($typeIds[$i] -eq $ElectionType) {
+                $script:ELECTION_TYPE_NAME = $typeNames[$i]
+                break
+            }
+        }
+        Write-Success "Tip izbora (parametar): [$ELECTION_TYPE] $ELECTION_TYPE_NAME"
+        return
+    }
+
     Show-Step 1 "Odabir tipa izbora"
     Write-Info "Odaberite tip izbora:"
     Write-Host ""
-
-    $typeIds = @(2, 3, 7)
-    $typeNames = @("Parlamentarni", "Lokalni", "Pokrajinski")
 
     $selectedIndex = Select-FromMenu -Ids $typeIds -Names $typeNames
 
@@ -408,6 +451,13 @@ function Select-ElectionType {
 
 # Step 2: Choose election round
 function Select-ElectionRound {
+    if ($ElectionRound -ne "") {
+        $script:ELECTION_ROUND = $ElectionRound
+        $script:ELECTION_ROUND_NAME = "Krug $ElectionRound"
+        Write-Success "Izborni krug (parametar): [$ELECTION_ROUND] $ELECTION_ROUND_NAME"
+        return
+    }
+
     Show-Step 2 "Odabir izbornog kruga"
     Write-Info "Ucitavam dostupne izborne krugove..."
     Write-Host ""
@@ -776,37 +826,173 @@ function Get-SingleStationResults {
     }
 }
 
+# Batch mode: download results for ALL regions, municipalities, and stations
+function Invoke-BatchDownloadAll {
+    Write-Host ""
+    Write-Host ("=" * 68) -ForegroundColor Cyan
+    Write-Host "  BATCH MOD: preuzimanje za sve regione, opstine i biracka mesta" -ForegroundColor Cyan
+    Write-Host ("=" * 68) -ForegroundColor Cyan
+    Write-Host ""
+
+    # ── Fetch all regions ────────────────────────────────────────────────
+    Write-Info "Ucitavam sve regione..."
+    $regionsFile = Join-Path $TMP_DIR ("batch_regions_{0}.json" -f (Get-Date -Format "yyyyMMdd_HHmmss"))
+    $regionsData = "election_type=$ELECTION_TYPE&election_round=$ELECTION_ROUND"
+    $httpCode = Invoke-ApiRequest -Url "$BASE_URL/get-regions/" -Body $regionsData -OutputFile $regionsFile
+
+    if ($httpCode -ne 200) {
+        Write-Err "Greska pri ucitavanju regiona (HTTP: $httpCode)"
+        exit 1
+    }
+
+    $regionsJson = Get-Content $regionsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    $batchRegionIds   = @()
+    $batchRegionNames = @()
+
+    if ($regionsJson.regions) {
+        $regionsJson.regions.PSObject.Properties | ForEach-Object {
+            $batchRegionIds   += $_.Name
+            $batchRegionNames += Convert-CyrillicToLatin $_.Value
+        }
+    }
+
+    if ($batchRegionIds.Count -eq 0) {
+        Write-Err "Nema dostupnih regiona."
+        exit 1
+    }
+    Write-Success "Pronadjeno $($batchRegionIds.Count) regiona"
+    Write-Host ""
+
+    for ($ri = 0; $ri -lt $batchRegionIds.Count; $ri++) {
+        $script:REGION_ID   = $batchRegionIds[$ri]
+        $script:REGION_NAME = $batchRegionNames[$ri]
+
+        Write-Host ("--- [Region {0}/{1}] {2} (ID: {3}) ---" -f ($ri + 1), $batchRegionIds.Count, $REGION_NAME, $REGION_ID) -ForegroundColor Blue
+
+        # ── Fetch municipalities ─────────────────────────────────────────
+        $muniFile = Join-Path $TMP_DIR ("batch_muni_{0}_{1}.json" -f $REGION_ID, (Get-Date -Format "yyyyMMdd_HHmmss"))
+        $muniData = "election_type=$ELECTION_TYPE&election_round=$ELECTION_ROUND&election_region=$REGION_ID"
+        $muniCode = Invoke-ApiRequest -Url "$BASE_URL/get-municipalities/" -Body $muniData -OutputFile $muniFile
+
+        if ($muniCode -ne 200) {
+            Write-Warn "  Greska pri ucitavanju opstina (HTTP: $muniCode) - preskacam region"
+            continue
+        }
+
+        $muniContent = Get-Content $muniFile -Raw -Encoding UTF8
+        $muniIds   = @()
+        $muniNames = @()
+
+        $valueMatches = [regex]::Matches($muniContent, 'value="([^"]*)"')
+        $nameMatches  = [regex]::Matches($muniContent, '>([^<]+)</option>')
+
+        for ($mi = 0; $mi -lt $valueMatches.Count; $mi++) {
+            $muniIds += $valueMatches[$mi].Groups[1].Value
+            if ($mi -lt $nameMatches.Count) {
+                $muniNames += Convert-CyrillicToLatin $nameMatches[$mi].Groups[1].Value
+            }
+        }
+
+        if ($muniIds.Count -eq 0) {
+            Write-Warn "  Nema opstina u regionu - preskacam"
+            continue
+        }
+        Write-Info "  $($muniIds.Count) opstina/gradova"
+
+        for ($mi = 0; $mi -lt $muniIds.Count; $mi++) {
+            $script:MUNICIPALITY_ID   = $muniIds[$mi]
+            $script:MUNICIPALITY_NAME = $muniNames[$mi]
+
+            Write-Host ("  [{0}/{1}] {2} (ID: {3})" -f ($mi + 1), $muniIds.Count, $MUNICIPALITY_NAME, $MUNICIPALITY_ID) -ForegroundColor Green
+
+            # ── Fetch stations ───────────────────────────────────────────
+            $stationsFile = Join-Path $TMP_DIR ("batch_stations_{0}_{1}.json" -f $MUNICIPALITY_ID, (Get-Date -Format "yyyyMMdd_HHmmss"))
+            $stationsData = "election_type=$ELECTION_TYPE&election_round=$ELECTION_ROUND&election_region=$REGION_ID&election_municipality=$MUNICIPALITY_ID"
+            $stationsCode = Invoke-ApiRequest -Url "$BASE_URL/get-election-stations/" -Body $stationsData -OutputFile $stationsFile
+
+            if ($stationsCode -ne 200) {
+                Write-Warn "    Greska pri ucitavanju birackih mesta (HTTP: $stationsCode) - preskacam"
+                continue
+            }
+
+            $script:stationIds   = @()
+            $script:stationNames = @()
+
+            $stationsJson = Get-Content $stationsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($stationsJson.election_stations) {
+                $stationsJson.election_stations.PSObject.Properties | ForEach-Object {
+                    $script:stationIds   += $_.Name
+                    $script:stationNames += Convert-CyrillicToLatin $_.Value
+                }
+            }
+
+            if ($stationIds.Count -eq 0) {
+                Write-Warn "    Nema birackih mesta - preskacam"
+                continue
+            }
+
+            Write-Info "    $($stationIds.Count) birackih mesta - preuzimam rezultate..."
+            # Reuse Get-AllResults which reads global station/region/municipality vars
+            Get-AllResults
+        }
+
+        Write-Host ""
+    }
+
+    Write-Host ""
+    Write-Success "BATCH preuzimanje zavrseno!"
+    Write-Info "Svi fajlovi su sacuvani u: $OUTPUT_DIR"
+}
+
 # Main execution
 function Main {
+    if ($Help) {
+        Show-Banner
+        Show-Usage
+        return
+    }
+
     Clear-Host
     Show-Banner
 
-    Write-Host "Ova skripta pomaze da se dobiju podaci"
-    Write-Host "o izbornim rezultatima iz RIK-a."
+    if ($Batch) {
+        Write-Host "Batch mod: preuzimanje svih rezultata."
+        if ($NoPdfs) { Write-Host "PDF preuzimanje: iskljuceno." }
+    }
+    else {
+        Write-Host "Ova skripta pomaze da se dobiju podaci"
+        Write-Host "o izbornim rezultatima iz RIK-a."
+    }
     Write-Host ""
 
     Initialize-Directories
 
     Select-ElectionType
     Select-ElectionRound
-    Select-Region
-    Select-Municipality
-    Get-ElectionStations
 
-    $downloadAll = Get-DownloadOption
-
-    if ($downloadAll) {
-        Get-AllResults
+    if ($Batch) {
+        Invoke-BatchDownloadAll
     }
     else {
-        Select-SingleStation
-        Get-SingleStationResults
-    }
+        Select-Region
+        Select-Municipality
+        Get-ElectionStations
 
-    Write-Host ""
-    Write-Info "Svi podaci su sacuvani u: $OUTPUT_DIR"
-    Write-Host ""
-    Write-Info "Takodje mozete pregledati sirove JSON odgovore u: $TMP_DIR"
+        $downloadAll = Get-DownloadOption
+
+        if ($downloadAll) {
+            Get-AllResults
+        }
+        else {
+            Select-SingleStation
+            Get-SingleStationResults
+        }
+
+        Write-Host ""
+        Write-Info "Svi podaci su sacuvani u: $OUTPUT_DIR"
+        Write-Host ""
+        Write-Info "Takodje mozete pregledati sirove JSON odgovore u: $TMP_DIR"
+    }
 }
 
 # Run

@@ -29,6 +29,12 @@ OUTPUT_DIR="./output"
 TMP_DIR="./output/tmp"
 PDF_DIR="./output/pdf"
 
+# CLI parameter defaults
+PARAM_ELECTION_TYPE=""
+PARAM_ELECTION_ROUND=""
+BATCH_MODE=0
+SKIP_PDFS=0
+
 # Common curl headers
 USER_AGENT='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
 
@@ -39,6 +45,60 @@ print_banner() {
     echo "║                   Izborni Rezultati - RIK                         ║"
     echo "╚═══════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
+}
+
+# Print usage help
+print_usage() {
+    echo ""
+    echo -e "${BOLD}Upotreba:${NC}"
+    echo "  $0 [opcije]"
+    echo ""
+    echo -e "${BOLD}Opcije:${NC}"
+    echo "  --election-type TIP    Tip izbora (2=Parlamentarni, 3=Lokalni, 7=Pokrajinski)"
+    echo "  --election-round KRUG  ID izbornog kruga (npr. 341140)"
+    echo "  --batch                Preuzmi sve regione, opštine i biračka mesta automatski"
+    echo "  --no-pdfs              Preskoči preuzimanje PDF zapisnika"
+    echo "  -h, --help             Prikaži ovu poruku"
+    echo ""
+    echo -e "${BOLD}Primeri:${NC}"
+    echo "  $0                                          # interaktivni mod"
+    echo "  $0 --election-type 2 --election-round 341140 --batch"
+    echo "  $0 --election-type 2 --election-round 341140 --batch --no-pdfs"
+    echo ""
+}
+
+# Parse command-line arguments
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --election-type)
+                PARAM_ELECTION_TYPE="$2"
+                shift 2
+                ;;
+            --election-round)
+                PARAM_ELECTION_ROUND="$2"
+                shift 2
+                ;;
+            --batch)
+                BATCH_MODE=1
+                shift
+                ;;
+            --no-pdfs)
+                SKIP_PDFS=1
+                shift
+                ;;
+            -h|--help)
+                print_banner
+                print_usage
+                exit 0
+                ;;
+            *)
+                error "Nepoznati argument: $1"
+                print_usage
+                exit 1
+                ;;
+        esac
+    done
 }
 
 # Print step header
@@ -145,6 +205,11 @@ download_pdfs_from_results() {
     local response_file=$1
     local station_id=$2
     local station_name=$3
+
+    if [[ "$SKIP_PDFS" -eq 1 ]]; then
+        echo "0"
+        return 0
+    fi
 
     # Extract minute_from_election_station field
     local minute_html
@@ -333,16 +398,27 @@ select_from_menu() {
 
 # Step 1: Choose election type
 choose_election_type() {
+    local type_ids=(2 3 7)
+    local type_names=("Parlamentarni" "Lokalni" "Pokrajinski")
+
+    if [[ -n "$PARAM_ELECTION_TYPE" ]]; then
+        ELECTION_TYPE="$PARAM_ELECTION_TYPE"
+        ELECTION_TYPE_NAME="Tip $ELECTION_TYPE"
+        local i
+        for i in "${!type_ids[@]}"; do
+            if [[ "${type_ids[$i]}" == "$ELECTION_TYPE" ]]; then
+                ELECTION_TYPE_NAME="${type_names[$i]}"
+                break
+            fi
+        done
+        export ELECTION_TYPE ELECTION_TYPE_NAME
+        success "Tip izbora (parametar): [${ELECTION_TYPE}] ${ELECTION_TYPE_NAME}"
+        return
+    fi
+
     print_step 1 "Odabir tipa izbora"
     info "Odaberite tip izbora:"
     echo ""
-
-    local type_ids=(2 3 7)
-    local type_names=(
-        "Parlamentarni"
-        "Lokalni"
-        "Pokrajinski"
-    )
 
     select_from_menu type_ids type_names
 
@@ -356,6 +432,14 @@ choose_election_type() {
 
 # Step 2: Choose election round
 choose_election_round() {
+    if [[ -n "$PARAM_ELECTION_ROUND" ]]; then
+        ELECTION_ROUND="$PARAM_ELECTION_ROUND"
+        ELECTION_ROUND_NAME="Krug $ELECTION_ROUND"
+        export ELECTION_ROUND ELECTION_ROUND_NAME
+        success "Izborni krug (parametar): [${ELECTION_ROUND}] ${ELECTION_ROUND_NAME}"
+        return
+    fi
+
     print_step 2 "Odabir izbornog kruga"
     info "Učitavam dostupne izborne krugove..."
     echo ""
@@ -845,6 +929,132 @@ get_single_station_results() {
     fi
 }
 
+# Batch mode: download results for ALL regions, municipalities, and stations
+batch_download_all() {
+    echo ""
+    echo -e "${BOLD}${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}${CYAN}  BATCH MOD: preuzimanje za sve regione, opštine i biračka mesta   ${NC}"
+    echo -e "${BOLD}${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    # ── Fetch all regions ──────────────────────────────────────────────────
+    info "Učitavam sve regione..."
+    local regions_url="${BASE_URL}/get-regions/"
+    local regions_response="${TMP_DIR}/batch_regions_$(date +%Y%m%d_%H%M%S).json"
+    local regions_data="election_type=${ELECTION_TYPE}&election_round=${ELECTION_ROUND}"
+
+    local http_code
+    http_code=$(api_request "$regions_url" "$regions_data" "$regions_response")
+    if [[ "$http_code" != "200" ]]; then
+        error "Greška pri učitavanju regiona (HTTP: $http_code)"
+        exit 1
+    fi
+
+    local batch_region_ids=()
+    local batch_region_names=()
+    local rid rname
+    while IFS= read -r rid; do
+        batch_region_ids+=("$rid")
+        rname=$(jq -r --arg id "$rid" '.regions[$id]' "$regions_response" 2>/dev/null)
+        rname=$(cyrillic_to_latin "$rname")
+        batch_region_names+=("$rname")
+    done < <(jq -r '.regions | keys[]' "$regions_response" 2>/dev/null)
+
+    local total_regions=${#batch_region_ids[@]}
+    if [[ $total_regions -eq 0 ]]; then
+        error "Nema dostupnih regiona."
+        exit 1
+    fi
+    success "Pronađeno $total_regions regiona"
+    echo ""
+
+    local region_idx muni_idx
+    local total_munis total_stations_count
+    local batch_muni_ids batch_muni_names
+    local muni_http_code stations_http_code
+
+    for ((region_idx=0; region_idx<total_regions; region_idx++)); do
+        REGION_ID="${batch_region_ids[$region_idx]}"
+        REGION_NAME="${batch_region_names[$region_idx]}"
+
+        echo -e "${BOLD}${BLUE}━━━ [Region $((region_idx+1))/${total_regions}] ${REGION_NAME} (ID: ${REGION_ID}) ━━━${NC}"
+
+        # ── Fetch municipalities ───────────────────────────────────────────
+        local muni_response="${TMP_DIR}/batch_muni_${REGION_ID}_$(date +%Y%m%d_%H%M%S).json"
+        local muni_data="election_type=${ELECTION_TYPE}&election_round=${ELECTION_ROUND}&election_region=${REGION_ID}"
+        muni_http_code=$(api_request "${BASE_URL}/get-municipalities/" "$muni_data" "$muni_response")
+
+        if [[ "$muni_http_code" != "200" ]]; then
+            warn "  Greška pri učitavanju opština (HTTP: $muni_http_code) - preskačem region"
+            continue
+        fi
+
+        batch_muni_ids=()
+        batch_muni_names=()
+        local mid mname
+        while IFS= read -r mid; do
+            batch_muni_ids+=("$mid")
+        done < <(grep -oE 'value="[^"]*"' "$muni_response" | sed 's/value="//;s/"//')
+        while IFS= read -r mname; do
+            mname=$(cyrillic_to_latin "$mname")
+            batch_muni_names+=("$mname")
+        done < <(grep -oE '>[^<]+</option>' "$muni_response" | sed 's/>//;s/<\/option>//')
+
+        total_munis=${#batch_muni_ids[@]}
+        if [[ $total_munis -eq 0 ]]; then
+            warn "  Nema opština u regionu - preskačem"
+            continue
+        fi
+        info "  $total_munis opština/gradova"
+
+        for ((muni_idx=0; muni_idx<total_munis; muni_idx++)); do
+            MUNICIPALITY_ID="${batch_muni_ids[$muni_idx]}"
+            MUNICIPALITY_NAME="${batch_muni_names[$muni_idx]}"
+
+            printf "\n  ${GREEN}[%d/%d]${NC} %s (ID: %s)\n" \
+                "$((muni_idx+1))" "$total_munis" "$MUNICIPALITY_NAME" "$MUNICIPALITY_ID"
+
+            # ── Fetch stations ─────────────────────────────────────────────
+            local stations_response="${TMP_DIR}/batch_stations_${MUNICIPALITY_ID}_$(date +%Y%m%d_%H%M%S).json"
+            local stations_data="election_type=${ELECTION_TYPE}&election_round=${ELECTION_ROUND}&election_region=${REGION_ID}&election_municipality=${MUNICIPALITY_ID}"
+            stations_http_code=$(api_request "${BASE_URL}/get-election-stations/" "$stations_data" "$stations_response")
+
+            if [[ "$stations_http_code" != "200" ]]; then
+                warn "    Greška pri učitavanju biračkih mesta (HTTP: $stations_http_code) - preskačem"
+                continue
+            fi
+
+            station_ids=()
+            station_names=()
+            local sid sname2
+            if [[ "$(jq 'has("election_stations")' "$stations_response" 2>/dev/null)" == "true" ]]; then
+                while IFS= read -r sid; do
+                    station_ids+=("$sid")
+                    sname2=$(jq -r --arg id "$sid" '.election_stations[$id]' "$stations_response" 2>/dev/null)
+                    sname2=$(cyrillic_to_latin "$sname2")
+                    station_names+=("$sname2")
+                done < <(jq -r '.election_stations | keys[]' "$stations_response" 2>/dev/null)
+            fi
+
+            total_stations_count=${#station_ids[@]}
+            if [[ $total_stations_count -eq 0 ]]; then
+                warn "    Nema biračkih mesta - preskačem"
+                continue
+            fi
+
+            info "    $total_stations_count biračkih mesta - preuzimam rezultate..."
+            # Reuse get_results() which uses global station_ids/station_names + REGION_*/MUNICIPALITY_* vars
+            get_results
+        done
+
+        echo ""
+    done
+
+    echo ""
+    success "BATCH preuzimanje završeno!"
+    info "Svi fajlovi su sačuvani u: $OUTPUT_DIR"
+}
+
 # Cleanup function
 cleanup() {
     echo ""
@@ -858,38 +1068,52 @@ trap cleanup SIGINT SIGTERM
 
 # Main execution
 main() {
+    parse_args "$@"
+
     clear
     print_banner
 
-    echo "Ova skripta pomaže da se dobiju podaci"
-    echo "o izbornim rezultatima iz RIK-a."
+    if [[ "$BATCH_MODE" -eq 1 ]]; then
+        echo "Batch mod: preuzimanje svih rezultata."
+        [[ "$SKIP_PDFS" -eq 1 ]] && echo "PDF preuzimanje: isključeno."
+    else
+        echo "Ova skripta pomaže da se dobiju podaci"
+        echo "o izbornim rezultatima iz RIK-a."
+    fi
     echo ""
 
     # Check dependencies
     check_dependencies
     setup_directories
 
-    # Main flow
+    # Step 1 & 2: election type and round (from params or interactive)
     choose_election_type
     choose_election_round
-    choose_region
-    choose_municipality
-    get_election_stations
 
-    # Ask user if they want all stations or single
-    download_all_option
-
-    if [[ "$DOWNLOAD_ALL" -eq 1 ]]; then
-        get_results
+    if [[ "$BATCH_MODE" -eq 1 ]]; then
+        # Batch: iterate all regions → municipalities → stations automatically
+        batch_download_all
     else
-        choose_single_station
-        get_single_station_results
-    fi
+        # Interactive flow
+        choose_region
+        choose_municipality
+        get_election_stations
 
-    echo ""
-    info "Svi podaci su sačuvani u: $OUTPUT_DIR"
-    echo ""
-    info "Takođe možete pregledati sirove JSON odgovore u: $TMP_DIR"
+        # Ask user if they want all stations or single
+        download_all_option
+
+        if [[ "$DOWNLOAD_ALL" -eq 1 ]]; then
+            get_results
+        else
+            choose_single_station
+            get_single_station_results
+        fi
+
+        echo ""
+        info "Svi podaci su sačuvani u: $OUTPUT_DIR"
+        echo ""
+        info "Takođe možete pregledati sirove JSON odgovore u: $TMP_DIR"
+    fi
 }
 
 # Run main function
